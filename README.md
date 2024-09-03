@@ -7,5 +7,7 @@ Working on Windows 10 and 11
 
 # Preview
 ----------------------------------------------------------
-![image](https://github.com/zoicware/WindowsUpdateManager/assets/118035521/3f234b49-dc47-4468-b439-3074b9c2bba5)
-![image](https://github.com/zoicware/WindowsUpdateManager/assets/118035521/b062f629-de2e-400d-96a6-00d539453b10)
+![image](https://github.com/user-attachments/assets/662e7023-5fe7-485e-a5e3-2a9572d7a00b)
+![image](https://github.com/user-attachments/assets/3f9d9fca-4770-43da-86a3-3eddde68b603)
+
+
