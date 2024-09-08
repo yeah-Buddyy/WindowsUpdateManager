@@ -1,11 +1,11 @@
 # https://github.com/zoicware/WindowsUpdateManager
 
-$isDebug = $false
-
 If (!([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]'Administrator')) {
-    Start-Process PowerShell.exe -ArgumentList ("-NoProfile -ExecutionPolicy Bypass -File `"{0}`"" -f $PSCommandPath) -Verb RunAs
+    Start-Process PowerShell.exe -ArgumentList ("-NoProfile -NoLogo -ExecutionPolicy Bypass -File `"{0}`"" -f $PSCommandPath) -Verb RunAs
     Exit	
 }
+
+$isDebug = $false
 
 try {
     # Check if the PSWindowsUpdate module is already installed
@@ -106,12 +106,20 @@ function askWoody {
         # Set the timeout to 10 seconds (10,000 milliseconds)
         $request.Timeout = 10000
 
-        # Get the response from the server
-        $response = $request.GetResponse()
-        $reader = New-Object System.IO.StreamReader($response.GetResponseStream())
-        $pageContent = $reader.ReadToEnd()
-        $reader.Close()
-        $response.Close()
+        try {
+            # Get the response from the server
+            $response = $request.GetResponse()
+            $reader = New-Object System.IO.StreamReader($response.GetResponseStream())
+            $pageContent = $reader.ReadToEnd()
+        } catch [System.Net.WebException] {
+            Write-Host "$($_.Exception.Response)"
+            return "Service currently unavailable"
+        } finally {
+            $reader.Close()
+            $response.Close()
+        }
+
+        Write-Host "AskWoody StatusCode $([int]$response.StatusCode)"
 
         # Use a regular expression to find the level in the alt attribute
         $regex = 'alt="Microsoft Patch Defense Condition level (\d+)"'
@@ -131,7 +139,7 @@ function askWoody {
         
             # Get the message corresponding to the level
             $message = $levelMessages[$level]
-            #Write-Host "Level $level $message"
+            Write-Host "Level $level $message"
             return $message
         } else {
             return "Service currently unavailable"
@@ -806,9 +814,15 @@ $showAskWoodyFunc = {
     } elseif ($getAskWoody -eq "All's clear. Patch while it's safe.") {
         $label8.Text = $getAskWoody
         $label8.ForeColor = 'Green' 
-    } else {
+    } elseif ($getAskWoody -eq "Patch reliability is unclear. Unless you have an immediate, pressing need to install a specific patch, don't do it.") {
         $label8.Text = $getAskWoody
         $label8.ForeColor = 'Yellow' 
+    } elseif ($getAskWoody -eq "There are widespread problems with current patches. It is prudent to patch but check your results carefully.") {
+        $label8.Text = $getAskWoody
+        $label8.ForeColor = 'Orange' 
+    } elseif ($getAskWoody -eq "There are isolated problems with current patches, but they are well-known and documented here. Check askwoody.com to see if you're affected and if things look OK, go ahead and patch.") {
+        $label8.Text = $getAskWoody
+        $label8.ForeColor = 'Blue' 
     }
     $label8.Font = $regularFont                                # Use a suitable font, e.g., $regularFont
     $TabPage2.Controls.Add($label8)
@@ -1073,7 +1087,7 @@ $checkedListBox.Add_MouseMove({
         $itemDetails = $updateDetails[$itemTitle]
 
         # Set the tooltip text to show the description and size
-        $tooltipText = "Title: " + $itemDetails.Title + "`nDescription: " + $itemDetails.Description + "`nSize: " + $itemDetails.Size
+        $tooltipText = "Title: " + $itemDetails.Title + "`nPublished: " + $itemDetails.Published + "`nDescription: " + $itemDetails.Description + "`nSize: " + $itemDetails.Size
         $toolTip.SetToolTip($checkedListBox, $tooltipText)
     } else {
         # Clear the tooltip if the mouse is not over an item
@@ -1093,11 +1107,13 @@ $checkForUpdate = {
     $checkedListBox.Items.Clear()
     if ($isDebug) {
         try {
-            Write-Host "Searching for Windows Updates"
+            Write-Host "Searching for Windows Updates.."
             $Global:updates = Get-WindowsUpdate -MicrosoftUpdate -Verbose
             $result = $Global:updates
             $result | Format-Table -AutoSize
+            Write-Host "Searching for Windows Updates finished"
         } catch {
+            Write-Host "Failed searching for Windows Updates"
             Write-Host "Error Message: $($_.Exception.Message)"
             Write-Host "Error Details: $($_.Exception)"
         }
@@ -1116,7 +1132,7 @@ $checkForUpdate = {
     else {
         foreach ($update in $updates) {
             $checkedListBox.Items.Add($update.Title, $false)
-            $updateDetails[$update.Title] = [PSCustomObject]@{ Title = $update.Title; Description = $update.Description; Size = $update.Size }
+            $updateDetails[$update.Title] = [PSCustomObject]@{ Title = $update.Title; Published = $update.LastDeploymentChangeTime; Description = $update.Description; Size = $update.Size }
         }
         
         if ($checkedListBox.Items.Count -gt 7) {
@@ -1132,9 +1148,7 @@ $checkUpdate.Text = 'Check for Updates'
 $checkUpdate.Location = New-Object Drawing.Point(10, 310)
 $checkUpdate.Size = New-Object Drawing.Size(120, 35)
 $checkUpdate.Add_Click({
-        Add-Log "Searching for Updates.."
         &$checkForUpdate
-        Add-Log "Searching for Updates finished"
     })
 
 $form.Controls.Add($checkUpdate)
@@ -1152,77 +1166,100 @@ $installSelectedUpdate = {
         return
     }
 
-    Write-Host 'Installing Selected Updates'
+    # Create a list to hold selected updates and their details
+    $selectedUpdatesWithDates = @()
+
+    Write-Host 'Gathering Selected Updates'
     foreach ($selectedUpdate in $checkedListBox.CheckedItems.GetEnumerator()) {
         $revisionNumber = $null  # Initialize or reset for each iteration
         $updateId = $null  # Initialize or reset for each iteration
-        $successfullyInstalled = $false  # Flag to track successful installation
+        $updatePublishedDate = $null  # Initialize or reset for each iteration
 
         if ($updates) {
             foreach ($update in $updates) {
                 if ($update.Title -eq $selectedUpdate) {
                     $revisionNumber = $update.Identity.RevisionNumber
                     $updateId = $update.Identity.UpdateID
+                    $updatePublishedDate = $update.LastDeploymentChangeTime
                     break
                 }
             }
-        }
-        else {
-            #driver updates
+        } else {
+            # Handle driver updates
             foreach ($driverUpdate in $driverUpdates) {
                 if ($driverUpdate.Title -eq $selectedUpdate) {
                     $revisionNumber = $driverUpdate.Identity.RevisionNumber
                     $updateId = $driverUpdate.Identity.UpdateID
+                    $updatePublishedDate = $driverUpdate.LastDeploymentChangeTime
                     break
                 }
             }
         }
+
         #Write-Host "RevisionNumber: $revisionNumber"
         #Write-Host "UpdateID: $updateId"
+        #Add-Log "Update Published Date: $updatePublishedDate"
 
-        if ($null -ne $revisionNumber -and $null -ne $updateId) {
-            if ($isDebug) {
-                try {
-                    Write-Host 'Installing', $selectedUpdate
-                    $result = Install-WindowsUpdate -UpdateID "$updateId" -RevisionNumber "$revisionNumber" -AcceptAll -IgnoreReboot -MicrosoftUpdate -Verbose
-                    $result | Format-Table -AutoSize
-                    if ($result.Result -contains "Failed") {
-                        Write-Host "Update installation failed."
-                    } else {
-                        Write-Host "Update installation completed successfully."
-                        $successfullyInstalled = $true  # Mark as successfully installed
-                    }
-                } catch {
-                    Write-Host "Update installation failed."
-                    Write-Host "Error Message: $($_.Exception.Message)"
-                    Write-Host "Error Details: $($_.Exception)"
-                }
-            } else {
-                try {
-                    Add-Log "Installing $selectedUpdate"
-                    $result = Install-WindowsUpdate -UpdateID "$updateId" -RevisionNumber "$revisionNumber" -AcceptAll -IgnoreReboot -MicrosoftUpdate
-                    if ($result.Result -contains "Failed") {
-                        Add-Log "Update installation failed $selectedUpdate"
-                    } else {
-                        Add-Log "Update installation completed successfully $selectedUpdate"
-                        $successfullyInstalled = $true  # Mark as successfully installed
-                    }
-                } catch {
-                    Add-Log "Update installation failed $selectedUpdate"
-                }
-            }
-            
-            # Remove the item from the CheckedListBox if successfully installed
-            if ($successfullyInstalled) {
-                $checkedListBox.Items.Remove($selectedUpdate)
+        if ($null -ne $revisionNumber -and $null -ne $updateId -and $null -ne $updatePublishedDate) {
+            # Store the update's details in the list
+            $selectedUpdatesWithDates += [PSCustomObject]@{
+                Title            = $selectedUpdate
+                RevisionNumber   = $revisionNumber
+                UpdateID         = $updateId
+                PublishedDate    = $updatePublishedDate
             }
         }
     }
+
+    # Sort the updates by PublishedDate (ascending)
+    $sortedUpdates = $selectedUpdatesWithDates | Sort-Object PublishedDate
+
+    Write-Host 'Installing Selected Updates by Date Order'
+    foreach ($update in $sortedUpdates) {
+        $successfullyInstalled = $false  # Flag to track successful installation
+
+        if ($isDebug) {
+            try {
+                Write-Host "Installing update:", $update.Title
+                $result = Install-WindowsUpdate -UpdateID "$($update.UpdateID)" -RevisionNumber "$($update.RevisionNumber)" -AcceptAll -IgnoreReboot -MicrosoftUpdate -Verbose
+                $result | Format-Table -AutoSize
+                if ($result.Result -contains "Failed") {
+                    Write-Host "Update installation failed $($update.Title)"
+                } else {
+                    Write-Host "Update installation completed successfully."
+                    $successfullyInstalled = $true  # Mark as successfully installed
+                }
+            } catch {
+                Write-Host "Update installation failed $($update.Title)"
+                Write-Host "Error Message: $($_.Exception.Message)"
+                Write-Host "Error Details: $($_.Exception)"
+            }
+        } else {
+            try {
+                Add-Log "Installing $($update.Title)"
+                $result = Install-WindowsUpdate -UpdateID "$($update.UpdateID)" -RevisionNumber "$($update.RevisionNumber)" -AcceptAll -IgnoreReboot -MicrosoftUpdate
+                if ($result.Result -contains "Failed") {
+                    Add-Log "Update installation failed $($update.Title)"
+                } else {
+                    Add-Log "Update installation completed successfully $($update.Title)"
+                    $successfullyInstalled = $true  # Mark as successfully installed
+                }
+            } catch {
+                Add-Log "Update installation failed $($update.Title)"
+            }
+        }
+        
+        # Remove the item from the CheckedListBox if successfully installed
+        if ($successfullyInstalled) {
+            $checkedListBox.Items.Remove($selectedUpdate)
+        }
+    }
+
     # Start a loop to continuously check the installer status
     while ((Get-WUInstallerStatus).IsBusy) {
         Write-Host "Installer status currently busy.."
         Add-Log "Installer status currently busy.."
-        Start-Sleep -Seconds 3
+        Start-Sleep -Seconds 1
     }
 
     Write-Host 'Check whether a restart is required to complete the installation of updates'
@@ -1235,9 +1272,7 @@ $installSelected.Text = 'Install Selected Updates'
 $installSelected.Location = New-Object Drawing.Point(140, 310)
 $installSelected.Size = New-Object Drawing.Size(120, 35)
 $installSelected.Add_Click({
-        Add-Log "Installing Selected Updates.."
         &$installSelectedUpdate
-        Add-Log "Installing Selected Updates finished"
     })
 
 $form.Controls.Add($installSelected)
@@ -1249,6 +1284,7 @@ $installSelected.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::Fro
 $installSelected.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(27, 27, 28)
 $TabPage2.Controls.Add($installSelected)
 
+<#
 $installAllUpdates = {
     Write-Host 'Installing All Updates'
     #check update server
@@ -1272,7 +1308,9 @@ $installAllUpdates = {
             $allupdates = Get-WindowsUpdate -MicrosoftUpdate -Verbose
             $result = $allupdates
             $result | Format-Table -AutoSize
+            Write-Host "Searching for Windows Updates finished"
         } catch {
+            Write-Host "Failed searching for Windows Updates"
             Write-Host "Error Message: $($_.Exception.Message)"
             Write-Host "Error Details: $($_.Exception)"
         }
@@ -1280,6 +1318,7 @@ $installAllUpdates = {
         try {
             Add-Log "Searching for Windows Updates.."
             $allupdates = Get-WindowsUpdate -MicrosoftUpdate
+            Add-Log "Searching for Windows Updates finished"
         } catch {
             Add-Log "Failed searching for Windows Updates"
         }
@@ -1301,11 +1340,11 @@ $installAllUpdates = {
             if ($null -ne $revisionNumber -and $null -ne $updateId) {
                 if ($isDebug) {
                     try {
-                        Write-Host "Installing $($update.Title)"
+                        Write-Host "Installing update:", $update.Title
                         $result = Install-WindowsUpdate -UpdateID "$updateId" -RevisionNumber "$revisionNumber" -AcceptAll -IgnoreReboot -MicrosoftUpdate -Verbose
                         $result | Format-Table -AutoSize
                         if ($result.Result -contains "Failed") {
-                            Write-Host "Update installation failed."
+                            Write-Host "Update installation failed $($update.Title)"
                         } else {
                             Write-Host "Update installation completed successfully."
                             foreach ($updateItem in $checkedListBox.Items) {
@@ -1315,18 +1354,18 @@ $installAllUpdates = {
                             }
                         }
                     } catch {
-                        Write-Host "Update installation failed."
+                        Write-Host "Update installation failed $($update.Title)"
                         Write-Host "Error Message: $($_.Exception.Message)"
                         Write-Host "Error Details: $($_.Exception)"
                     }
                 } else {
                     try {
-                        Add-Log "Installing $($update.Title)"
+                        Add-Log "Installing update:", $update.Title
                         $result = Install-WindowsUpdate -UpdateID "$updateId" -RevisionNumber "$revisionNumber" -AcceptAll -IgnoreReboot -MicrosoftUpdate
                         if ($result.Result -contains "Failed") {
                             Add-Log "Update installation failed $($update.Title)"
                         } else {
-                            Add-Log "Update installation completed successfully $($update.Title)"
+                            Add-Log "Update installation completed successfully"
                             foreach ($updateItem in $checkedListBox.Items) {
                                 if ($update.Title -eq $updateItem) {
                                     $checkedListBox.Items.Remove($updateItem)
@@ -1339,6 +1378,7 @@ $installAllUpdates = {
                 }
             }
         }
+
         if ($null -ne $server -or $serverConnect) {
             Write-Host 'Disabling Windows Update Location Connectivity'
             Add-Log "Disabling Windows Update Location Connectivity"
@@ -1347,6 +1387,7 @@ $installAllUpdates = {
             Reg.exe add 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' /v 'UpdateServiceUrlAlternate' /t REG_SZ /d 'https://DoNotUpdateWindows10.com/' /f
             Reg.exe add 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' /v 'DoNotConnectToWindowsUpdateInternetLocations' /t REG_DWORD /d '1' /f 
         }
+        
         # Start a loop to continuously check the installer status
         while ((Get-WUInstallerStatus).IsBusy) {
             Write-Host "Installer status currently busy.."
@@ -1357,7 +1398,6 @@ $installAllUpdates = {
         Write-Host 'Check whether a restart is required to complete the installation of updates'
         Add-Log "Check whether a restart is required to complete the installation of updates"
         Show-RestartPrompt
-        
     }
 }
 
@@ -1366,9 +1406,7 @@ $installALL.Text = 'Install All Updates'
 $installALL.Location = New-Object Drawing.Point(270, 310)
 $installALL.Size = New-Object Drawing.Size(120, 35)
 $installALL.Add_Click({
-        Add-Log "Installing All Updates.."
         &$installAllUpdates
-        Add-Log "Installing All Updates finished"
     })
 
 $form.Controls.Add($installALL)
@@ -1379,6 +1417,7 @@ $installALL.FlatAppearance.BorderSize = 0
 $installALL.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(62, 62, 64)
 $installALL.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(27, 27, 28)
 $TabPage2.Controls.Add($installALL)
+#>
 
 $showHiddenUpdatesFunc = {
     if ($isDebug) {
@@ -1388,7 +1427,9 @@ $showHiddenUpdatesFunc = {
             $hiddenUpdates = Get-WindowsUpdate -IsHidden -Verbose
             $result = $hiddenUpdates
             $result | Format-Table -AutoSize
+            Write-Host "Searching for Hidden Windows Updates finished"
         } catch {
+            Write-Host "Failed Searching for Hidden Windows Updates"
             Write-Host "Error Message: $($_.Exception.Message)"
             Write-Host "Error Details: $($_.Exception)"
         }
@@ -1396,12 +1437,14 @@ $showHiddenUpdatesFunc = {
         try {
             Add-Log "Searching for Hidden Windows Updates.."
             $hiddenUpdates = Get-WindowsUpdate -MicrosoftUpdate -IsHidden
+            Add-Log "Searching for Hidden Windows Updates finished"
         } catch {
             Add-Log "Failed searching for Hidden Windows Updates"
         }
     }
 
     if ($hiddenUpdates.Count -le 0) {
+        Write-Host "You do not have any hidden Windows updates yet"
         Add-Log "You do not have any hidden Windows updates yet"
         return
     }
@@ -1424,6 +1467,9 @@ $showHiddenUpdatesFunc = {
 
     # Display the selected updates in a GridView
     $selectedUpdates | Out-GridView -Title "Hidden Windows Updates"
+
+    Write-Host "Show Hidden Updates finished"
+    Add-Log "Show Hidden Updates finished"
 }
 
 $showHiddenUpdates = New-Object Windows.Forms.Button
@@ -1431,9 +1477,7 @@ $showHiddenUpdates.Text = 'Show Hidden Updates'
 $showHiddenUpdates.Location = New-Object Drawing.Point(10, 370)
 $showHiddenUpdates.Size = New-Object Drawing.Size(120, 35)
 $showHiddenUpdates.Add_Click({
-        Add-Log "Display Hidden Updates.."
         &$showHiddenUpdatesFunc
-        Add-Log "Display Hidden Updates finished.."
     })
 
 $form.Controls.Add($showHiddenUpdates)
@@ -1451,6 +1495,7 @@ $hideSelectedUpdatesFunc = {
 
     if ($checkedListBox.CheckedItems.Count -le 0) {
         Add-Log "No items are selected (checked)."
+        Write-Host "No items are selected (checked)."
         return
     }
 
@@ -1486,7 +1531,9 @@ $hideSelectedUpdatesFunc = {
                     Write-Host 'Hiding', $selectedUpdate
                     $result = Hide-WindowsUpdate -UpdateID "$updateId" -RevisionNumber "$revisionNumber" -AcceptAll -Verbose
                     $result | Format-Table -AutoSize
+                    Write-Host "Hiding Selected Updates finished"
                 } catch {
+                    Write-Host "Failed Hiding $selectedUpdate"
                     Write-Host "Error Message: $($_.Exception.Message)"
                     Write-Host "Error Details: $($_.Exception)"
                 }
@@ -1494,6 +1541,7 @@ $hideSelectedUpdatesFunc = {
                 try {
                     Add-Log "Hiding $selectedUpdate"
                     Hide-WindowsUpdate -UpdateID "$updateId" -RevisionNumber "$revisionNumber" -AcceptAll
+                    Add-Log "Hiding Selected Updates finished"
                 } catch {
                     Add-Log "Failed Hiding $selectedUpdate"
                 }
@@ -1515,9 +1563,7 @@ $hideSelectedUpdates.Text = 'Hide Selected Updates'
 $hideSelectedUpdates.Location = New-Object Drawing.Point(140, 370)
 $hideSelectedUpdates.Size = New-Object Drawing.Size(120, 35)
 $hideSelectedUpdates.Add_Click({
-        Add-Log "Hiding Selected Updates.."
         &$hideSelectedUpdatesFunc
-        Add-Log "Hiding Selected Updates finished"
     })
 
 $form.Controls.Add($hideSelectedUpdates)
@@ -1589,7 +1635,9 @@ $unhideSelectedUpdatesFunc = {
                     Write-Host 'UnHiding', $($selectedUpdate.Title)
                     $result = UnHide-WindowsUpdate -UpdateID "$updateId" -RevisionNumber "$revNumber" -AcceptAll -Verbose
                     $result | Format-Table -AutoSize
+                    Write-Host "UnHiding Selected Updates finished"
                 } catch {
+                    Write-Host "Failed UnHiding $($selectedUpdate.Title)"
                     Write-Host "Error Message: $($_.Exception.Message)"
                     Write-Host "Error Details: $($_.Exception)"
                 }
@@ -1597,6 +1645,7 @@ $unhideSelectedUpdatesFunc = {
                 try {
                     Add-Log "UnHiding $($selectedUpdate.Title)"
                     UnHide-WindowsUpdate -UpdateID "$updateId" -RevisionNumber "$revNumber" -AcceptAll
+                    Add-Log "UnHiding Selected Updates finished"
                 } catch {
                     Add-Log "Failed UnHiding $($selectedUpdate.Title)"
                 }
@@ -1610,9 +1659,7 @@ $unhideSelectedUpdates.Text = 'Select Updates To Unhide'
 $unhideSelectedUpdates.Location = New-Object Drawing.Point(270, 370)
 $unhideSelectedUpdates.Size = New-Object Drawing.Size(120, 35)
 $unhideSelectedUpdates.Add_Click({
-        Add-Log "UnHiding Selected Updates.."
         &$unhideSelectedUpdatesFunc
-        Add-Log "UnHiding Selected Updates finished"
     })
 
 $form.Controls.Add($unhideSelectedUpdates)
@@ -1632,7 +1679,9 @@ $showHistoryFunc = {
             $historyUpdates = Get-WUHistory -Verbose
             $result = $historyUpdates
             $result | Format-Table -AutoSize
+            Write-Host "Searching for History Windows Updates finished"
         } catch {
+            Write-Host "Failed searching for History Windows Updates"
             Write-Host "Error Message: $($_.Exception.Message)"
             Write-Host "Error Details: $($_.Exception)"
         }
@@ -1640,6 +1689,7 @@ $showHistoryFunc = {
         try {
             Add-Log "Searching for History Windows Updates.."
             $historyUpdates = Get-WUHistory
+            Add-Log "Searching for History Windows Updates finished"
         } catch {
             Add-Log "Failed searching for History Windows Updates"
         }
@@ -1658,6 +1708,9 @@ $showHistoryFunc = {
 
     # Display the selected updates in a GridView
     $selectedUpdates | Out-GridView -Title "History Windows Updates"
+
+    Write-Host "Show Update History finished"
+    Add-Log "Show Update History finished"
 }
 
 $showHistory = New-Object Windows.Forms.Button
@@ -1665,9 +1718,7 @@ $showHistory.Text = 'Show Update History'
 $showHistory.Location = New-Object Drawing.Point(10, 430)
 $showHistory.Size = New-Object Drawing.Size(120, 35)
 $showHistory.Add_Click({
-        Add-Log "Show Update History.."
         &$showHistoryFunc
-        Add-Log "Show Update History finished"
     })
 
 $form.Controls.Add($showHistory)
@@ -1678,6 +1729,139 @@ $showHistory.FlatAppearance.BorderSize = 0
 $showHistory.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(62, 62, 64)
 $showHistory.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(27, 27, 28)
 $TabPage2.Controls.Add($showHistory)
+
+$showInstalledFunc = {
+    try {
+        Write-Host "Show Installed Updates"
+        Add-Log "Show Installed Updates"
+        # Get the installed updates with provider 'msu'
+        $msuPackages = Get-Package | Where-Object { $_.ProviderName -eq "msu" } | 
+            Select-Object @{Name='Name'; Expression={$_.Name}}
+    
+        # Get the update history from Windows Update with status 'Succeeded'
+        $wuHistory = Get-WUHistory | Where-Object { $_.Result -eq 'Succeeded' } | 
+            Select-Object Title, Date, @{Name='UpdateID'; Expression={$_.UpdateIdentity.UpdateID}}
+    
+        # Cross-reference by comparing the names from Get-Package and Titles from Get-WUHistory
+        $updatesWithDate = foreach ($package in $msuPackages) {
+            $match = $wuHistory | Where-Object { $_.Title -eq $package.Name }
+            if ($match) {
+                # Return an object with the Name (from Get-Package) and Date (from Get-WUHistory)
+                [PSCustomObject]@{
+                    Name = $package.Name
+                    InstalledOn = $match.Date
+                    UpdateID = $match.UpdateID
+                }
+            }
+        }
+    
+        # Display the result in a GridView with a title "Installed Updates"
+        $updatesWithDate | Out-GridView -Title "Installed Updates"
+    
+        Write-Host "Show Installed Updates finished"
+        Add-Log "Show Installed Updates finished"
+    } catch {
+        Write-Host "Failed Showing Installed Updates"
+        Add-Log "Failed Showing Installed Updates"
+        Write-Host "Error Message: $($_.Exception.Message)"
+        Write-Host "Error Details: $($_.Exception)"
+    }
+}
+
+$showInstalled = New-Object Windows.Forms.Button
+$showInstalled.Text = 'Show Installed Updates'
+$showInstalled.Location = New-Object Drawing.Point(140, 430)
+$showInstalled.Size = New-Object Drawing.Size(120, 35)
+$showInstalled.Add_Click({
+        &$showInstalledFunc
+    })
+
+$form.Controls.Add($showInstalled)
+$showInstalled.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+$showInstalled.ForeColor = [System.Drawing.Color]::White
+$showInstalled.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$showInstalled.FlatAppearance.BorderSize = 0
+$showInstalled.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(62, 62, 64)
+$showInstalled.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(27, 27, 28)
+$TabPage2.Controls.Add($showInstalled)
+
+<#
+$uninstallUpdateFunc = {
+    # Get the installed updates with provider 'msu'
+    $msuPackages = Get-Package | Where-Object { $_.ProviderName -eq "msu" } | 
+        Select-Object @{Name='Name'; Expression={$_.Name}}
+
+    # Get the update history from Windows Update with status 'Succeeded'
+    $wuHistory = Get-WUHistory | Where-Object { $_.Result -eq 'Succeeded' } | 
+        Select-Object Title, Date, @{Name='UpdateID'; Expression={$_.UpdateIdentity.UpdateID}}
+
+    # Cross-reference by comparing the names from Get-Package and Titles from Get-WUHistory
+    $updatesWithDetails = foreach ($package in $msuPackages) {
+        $match = $wuHistory | Where-Object { $_.Title -eq $package.Name }
+        if ($match) {
+            # Return an object with the Name (from Get-Package), Date, and UpdateID (from Get-WUHistory)
+            [PSCustomObject]@{
+                Name = $package.Name
+                InstalledOn = $match.Date
+                UpdateID = $match.UpdateID
+            }
+        }
+    }
+
+    # Display the result in a GridView and allow multiple selections
+    $selectedUpdates = $updatesWithDetails | Out-GridView -Title "Select To Uninstall Updates - Works only on Microsoft Windows Updates, drivers not supported at the moment." -PassThru
+
+    # Check if any updates were selected
+    if ($selectedUpdates) {
+        foreach ($update in $selectedUpdates) {
+            if ($isDebug) {
+                try {
+                    # Uninstall the selected update
+                    Write-Host 'Uninstalling', $($update.Name)
+                    $result = Uninstall-WindowsUpdate -UpdateID "$($update.UpdateID)" -AcceptAll -Verbose
+                    $result | Format-Table -AutoSize
+                    Write-Host "Successfully uninstalled update with Name $($update.Name)"
+                } catch {
+                    Write-Host "Failed Uninstalling $($update.Name)"
+                    Write-Host "Error Message: $($_.Exception.Message)"
+                    Write-Host "Error Details: $($_.Exception)"
+                }
+            } else {
+                try {
+                    Add-Log "Uninstalling $($update.Name)"
+                    Uninstall-WindowsUpdate -UpdateID "$($update.UpdateID)" -AcceptAll
+                    Add-Log "Successfully uninstalled update with Name $($update.Name)"
+                } catch {
+                    Add-Log "Failed Uninstalling $($update.Name)"
+                }
+            }
+        }
+    } else {
+        Write-Host "No updates selected for uninstallation."
+        Add-Log "No updates selected for uninstallation."
+    }
+
+    Write-Host "Show Installed Updates finished"
+    Add-Log "Show Installed Updates finished" 
+}
+
+$uninstallUpdate = New-Object Windows.Forms.Button
+$uninstallUpdate.Text = 'Select Updates To Uninstall'
+$uninstallUpdate.Location = New-Object Drawing.Point(270, 430)
+$uninstallUpdate.Size = New-Object Drawing.Size(120, 35)
+$uninstallUpdate.Add_Click({
+        &$uninstallUpdateFunc
+    })
+
+$form.Controls.Add($uninstallUpdate)
+$uninstallUpdate.BackColor = [System.Drawing.Color]::FromArgb(30, 30, 30)
+$uninstallUpdate.ForeColor = [System.Drawing.Color]::White
+$uninstallUpdate.FlatStyle = [System.Windows.Forms.FlatStyle]::Flat
+$uninstallUpdate.FlatAppearance.BorderSize = 0
+$uninstallUpdate.FlatAppearance.MouseOverBackColor = [System.Drawing.Color]::FromArgb(62, 62, 64)
+$uninstallUpdate.FlatAppearance.MouseDownBackColor = [System.Drawing.Color]::FromArgb(27, 27, 28)
+$TabPage2.Controls.Add($uninstallUpdate)
+#>
 
 $showDriver = {
     if ($showOnlyDriver.Checked) {
@@ -1696,7 +1880,9 @@ $showDriver = {
                 $Global:driverUpdates = Get-WindowsUpdate -MicrosoftUpdate -UpdateType Driver -Verbose
                 $result = $Global:driverUpdates
                 $result | Format-Table -AutoSize
+                Write-Host "Searching for Windows Driver Updates finished"
             } catch {
+                Write-Host "Failed Searching for Windows Driver Updates"
                 Write-Host "Error Message: $($_.Exception.Message)"
                 Write-Host "Error Details: $($_.Exception)"
             }
@@ -1704,6 +1890,7 @@ $showDriver = {
             try {
                 Add-Log "Searching for Windows Driver Updates"
                 $Global:driverUpdates = Get-WindowsUpdate -MicrosoftUpdate -UpdateType Driver
+                Add-Log "Searching for Windows Driver Updates finished"
             } catch {
                 Add-Log "Failed searching for Windows Driver Updates"
             }
@@ -1740,8 +1927,58 @@ $showOnlyDriver.Text = 'Show Only Driver Updates'
 $showOnlyDriver.add_CheckedChanged($showDriver)
 $TabPage2.Controls.Add($showOnlyDriver)
 
-$form.Add_Shown({$form.Activate()})
+# Boolean flag to ensure the code runs only once
+$codeExecuted = $false
+
+# Event handler for Shown event to execute code after the form is fully visible
+$form.Add_Shown({
+    if (-not $codeExecuted) {
+        # Code to execute after the form has fully loaded and is shown
+        $apiVersion = (Get-WUApiVersion).ApiVersion
+        $wuApiDllVersion = (Get-WUApiVersion).WuapiDllVersion
+        $psWindowsUpdate = (Get-WUApiVersion).PSWindowsUpdate
+        $psWUModuleDll = (Get-WUApiVersion).PSWUModuleDll
+        Write-Host "Windows Update Agent API version: $($apiVersion) ($($wuApiDllVersion))"
+        Add-Log "Windows Update Agent API version: $($apiVersion) ($($wuApiDllVersion))"
+        Write-Host "PSWindowsUpdate version: ($($psWindowsUpdate))"
+        Add-Log "PSWindowsUpdate version: ($($psWindowsUpdate))"
+        Write-Host "PSWUModuleDll version: ($($psWUModuleDll))"
+        Add-Log "PSWUModuleDll version: ($($psWUModuleDll))"
+
+        #check update server
+        $server = getWUServer
+        $serverConnect = getWUConnection
+        if ($null -ne $server -or $serverConnect) {
+            #enable connection so that get-windowsupdate works
+            Write-host 'Connect to Windows Update Location Disabled..'
+            Add-Log "Connect to Windows Update Location Disabled.."
+            Write-Host 'Enabling Connection'
+            Add-Log "Enabling Connection"
+            Reg.exe delete 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' /v 'DoNotConnectToWindowsUpdateInternetLocations' /f >$null 2>&1
+            Reg.exe delete 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' /v 'WUServer' /f >$null 2>&1
+            Reg.exe delete 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' /v 'WUStatusServer' /f >$null 2>&1
+            Reg.exe delete 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' /v 'UpdateServiceUrlAlternate' /f >$null 2>&1
+        }
+
+        # Set the flag to true to prevent re-execution
+        $codeExecuted = $true
+
+        $form.Activate()
+    }
+})
+
+# Run the form
 [System.Windows.Forms.Application]::Run($form)
+
+# execute code after the form is closed
+if ($null -ne $server -or $serverConnect) {
+    Write-Host "Form has been closed!"
+    Write-Host 'Disabling Windows Update Location Connectivity'
+    Reg.exe add 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' /v 'WUServer' /t REG_SZ /d 'https://DoNotUpdateWindows10.com/' /f
+    Reg.exe add 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' /v 'WUStatusServer' /t REG_SZ /d 'https://DoNotUpdateWindows10.com/' /f
+    Reg.exe add 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' /v 'UpdateServiceUrlAlternate' /t REG_SZ /d 'https://DoNotUpdateWindows10.com/' /f
+    Reg.exe add 'HKLM\SOFTWARE\Policies\Microsoft\Windows\WindowsUpdate' /v 'DoNotConnectToWindowsUpdateInternetLocations' /t REG_DWORD /d '1' /f 
+}
 
 $stream.Dispose()
 $form.Dispose()
