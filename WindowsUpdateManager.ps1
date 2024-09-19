@@ -151,6 +151,9 @@ function askWoody {
 }
 
 if (-not($isDebug)) {
+    # For additional PSWindowsUpdate debug information use $DebugPreference = "Continue"
+    $DebugPreference = "Continue"
+
     # (0=hidden, ShowMinimized=2, etc: cf stackoverflow.com/a/40621143/1486850
     # Hide PowerShell Console
     Add-Type -Name Window -Namespace Console -MemberDefinition '
@@ -1108,7 +1111,7 @@ $checkForUpdate = {
     if ($isDebug) {
         try {
             Write-Host "Searching for Windows Updates.."
-            $Global:updates = Get-WindowsUpdate -MicrosoftUpdate -Verbose
+            $Global:updates = Get-WindowsUpdate -MicrosoftUpdate -Verbose -Debuger -ErrorAction Stop
             $result = $Global:updates
             $result | Format-Table -AutoSize
             Write-Host "Searching for Windows Updates finished"
@@ -1120,7 +1123,7 @@ $checkForUpdate = {
     } else {
         try {
             Add-Log "Searching for Windows Updates.."
-            $Global:updates = Get-WindowsUpdate -MicrosoftUpdate
+            $Global:updates = Get-WindowsUpdate -MicrosoftUpdate -ErrorAction Stop
             Add-Log "Searching for Windows Updates finished"
         } catch {
             Add-Log "Failed searching for Windows Updates"
@@ -1221,11 +1224,14 @@ $installSelectedUpdate = {
         if ($isDebug) {
             try {
                 Write-Host "Installing update:", $update.Title
-                $result = Install-WindowsUpdate -UpdateID "$($update.UpdateID)" -RevisionNumber "$($update.RevisionNumber)" -AcceptAll -IgnoreReboot -MicrosoftUpdate -Verbose
+                $result = Install-WindowsUpdate -UpdateID "$($update.UpdateID)" -RevisionNumber "$($update.RevisionNumber)" -AcceptAll -IgnoreReboot -MicrosoftUpdate -Verbose -Debuger -ErrorAction Stop
                 $result | Format-Table -AutoSize
                 if ($result.Result -contains "Failed") {
                     Write-Host "Update installation failed $($update.Title)"
-                } else {
+                } elseif ($result.Result -contains "Succeeded") {
+                    Write-Host "Update installation completed successfully."
+                    $successfullyInstalled = $true  # Mark as successfully installed
+                } elseif ($result.Result -contains "InProgress") {
                     Write-Host "Update installation completed successfully."
                     $successfullyInstalled = $true  # Mark as successfully installed
                 }
@@ -1237,10 +1243,13 @@ $installSelectedUpdate = {
         } else {
             try {
                 Add-Log "Installing $($update.Title)"
-                $result = Install-WindowsUpdate -UpdateID "$($update.UpdateID)" -RevisionNumber "$($update.RevisionNumber)" -AcceptAll -IgnoreReboot -MicrosoftUpdate
+                $result = Install-WindowsUpdate -UpdateID "$($update.UpdateID)" -RevisionNumber "$($update.RevisionNumber)" -AcceptAll -IgnoreReboot -MicrosoftUpdate -ErrorAction Stop
                 if ($result.Result -contains "Failed") {
                     Add-Log "Update installation failed $($update.Title)"
-                } else {
+                } elseif ($result.Result -contains "Succeeded") {
+                    Add-Log "Update installation completed successfully $($update.Title)"
+                    $successfullyInstalled = $true  # Mark as successfully installed
+                } elseif ($result.Result -contains "InProgress") {
                     Add-Log "Update installation completed successfully $($update.Title)"
                     $successfullyInstalled = $true  # Mark as successfully installed
                 }
@@ -1259,7 +1268,7 @@ $installSelectedUpdate = {
     while ((Get-WUInstallerStatus).IsBusy) {
         Write-Host "Installer status currently busy.."
         Add-Log "Installer status currently busy.."
-        Start-Sleep -Seconds 1
+        Start-Sleep -Seconds 5
     }
 
     Write-Host 'Check whether a restart is required to complete the installation of updates'
@@ -1305,7 +1314,7 @@ $installAllUpdates = {
     if ($isDebug) {
         try {
             Write-Host 'Searching for Windows Updates..'
-            $allupdates = Get-WindowsUpdate -MicrosoftUpdate -Verbose
+            $allupdates = Get-WindowsUpdate -MicrosoftUpdate -Verbose -Debuger
             $result = $allupdates
             $result | Format-Table -AutoSize
             Write-Host "Searching for Windows Updates finished"
@@ -1341,7 +1350,7 @@ $installAllUpdates = {
                 if ($isDebug) {
                     try {
                         Write-Host "Installing update:", $update.Title
-                        $result = Install-WindowsUpdate -UpdateID "$updateId" -RevisionNumber "$revisionNumber" -AcceptAll -IgnoreReboot -MicrosoftUpdate -Verbose
+                        $result = Install-WindowsUpdate -UpdateID "$updateId" -RevisionNumber "$revisionNumber" -AcceptAll -IgnoreReboot -MicrosoftUpdate -Verbose -Debuger
                         $result | Format-Table -AutoSize
                         if ($result.Result -contains "Failed") {
                             Write-Host "Update installation failed $($update.Title)"
@@ -1424,7 +1433,7 @@ $showHiddenUpdatesFunc = {
         try {
             Write-Host "Searching for Hidden Windows Updates.."
             # Get the hidden Windows updates
-            $hiddenUpdates = Get-WindowsUpdate -IsHidden -Verbose
+            $hiddenUpdates = Get-WindowsUpdate -IsHidden -Verbose -Debuger -ErrorAction Stop
             $result = $hiddenUpdates
             $result | Format-Table -AutoSize
             Write-Host "Searching for Hidden Windows Updates finished"
@@ -1436,7 +1445,7 @@ $showHiddenUpdatesFunc = {
     } else {
         try {
             Add-Log "Searching for Hidden Windows Updates.."
-            $hiddenUpdates = Get-WindowsUpdate -MicrosoftUpdate -IsHidden
+            $hiddenUpdates = Get-WindowsUpdate -MicrosoftUpdate -IsHidden -ErrorAction Stop
             Add-Log "Searching for Hidden Windows Updates finished"
         } catch {
             Add-Log "Failed searching for Hidden Windows Updates"
@@ -1529,7 +1538,7 @@ $hideSelectedUpdatesFunc = {
             if ($isDebug) {
                 try {
                     Write-Host 'Hiding', $selectedUpdate
-                    $result = Hide-WindowsUpdate -UpdateID "$updateId" -RevisionNumber "$revisionNumber" -AcceptAll -Verbose
+                    $result = Hide-WindowsUpdate -UpdateID "$updateId" -RevisionNumber "$revisionNumber" -AcceptAll -Verbose -Debuger -ErrorAction Stop
                     $result | Format-Table -AutoSize
                     Write-Host "Hiding Selected Updates finished"
                 } catch {
@@ -1540,7 +1549,7 @@ $hideSelectedUpdatesFunc = {
             } else {
                 try {
                     Add-Log "Hiding $selectedUpdate"
-                    Hide-WindowsUpdate -UpdateID "$updateId" -RevisionNumber "$revisionNumber" -AcceptAll
+                    Hide-WindowsUpdate -UpdateID "$updateId" -RevisionNumber "$revisionNumber" -AcceptAll -ErrorAction Stop
                     Add-Log "Hiding Selected Updates finished"
                 } catch {
                     Add-Log "Failed Hiding $selectedUpdate"
@@ -1580,7 +1589,7 @@ $unhideSelectedUpdatesFunc = {
         try {
             Write-Host "Searching for Hidden Windows Updates.."
             # Get the hidden Windows updates
-            $hiddenUpdates = Get-WindowsUpdate -IsHidden -Verbose
+            $hiddenUpdates = Get-WindowsUpdate -IsHidden -Verbose -Debuger -ErrorAction Stop
             $result = $hiddenUpdates
             $result | Format-Table -AutoSize
         } catch {
@@ -1590,7 +1599,7 @@ $unhideSelectedUpdatesFunc = {
     } else {
         try {
             Add-Log "Searching for Hidden Windows Updates.."
-            $hiddenUpdates = Get-WindowsUpdate -MicrosoftUpdate -IsHidden
+            $hiddenUpdates = Get-WindowsUpdate -MicrosoftUpdate -IsHidden -ErrorAction Stop
         } catch {
             Add-Log "Failed searching for Hidden Windows Updates"
         }
@@ -1633,7 +1642,7 @@ $unhideSelectedUpdatesFunc = {
             if ($isDebug) {
                 try {
                     Write-Host 'UnHiding', $($selectedUpdate.Title)
-                    $result = UnHide-WindowsUpdate -UpdateID "$updateId" -RevisionNumber "$revNumber" -AcceptAll -Verbose
+                    $result = UnHide-WindowsUpdate -UpdateID "$updateId" -RevisionNumber "$revNumber" -AcceptAll -Verbose -Debuger -ErrorAction Stop
                     $result | Format-Table -AutoSize
                     Write-Host "UnHiding Selected Updates finished"
                 } catch {
@@ -1644,7 +1653,7 @@ $unhideSelectedUpdatesFunc = {
             } else {
                 try {
                     Add-Log "UnHiding $($selectedUpdate.Title)"
-                    UnHide-WindowsUpdate -UpdateID "$updateId" -RevisionNumber "$revNumber" -AcceptAll
+                    UnHide-WindowsUpdate -UpdateID "$updateId" -RevisionNumber "$revNumber" -AcceptAll -ErrorAction Stop
                     Add-Log "UnHiding Selected Updates finished"
                 } catch {
                     Add-Log "Failed UnHiding $($selectedUpdate.Title)"
@@ -1676,7 +1685,7 @@ $showHistoryFunc = {
         try {
             Write-Host "Searching for History Windows Updates.."
             # Get the History
-            $historyUpdates = Get-WUHistory -Verbose
+            $historyUpdates = Get-WUHistory -Verbose -Debuger -ErrorAction Stop
             $result = $historyUpdates
             $result | Format-Table -AutoSize
             Write-Host "Searching for History Windows Updates finished"
@@ -1688,7 +1697,7 @@ $showHistoryFunc = {
     } else {
         try {
             Add-Log "Searching for History Windows Updates.."
-            $historyUpdates = Get-WUHistory
+            $historyUpdates = Get-WUHistory -ErrorAction Stop
             Add-Log "Searching for History Windows Updates finished"
         } catch {
             Add-Log "Failed searching for History Windows Updates"
@@ -1740,7 +1749,7 @@ $showInstalledFunc = {
     
         # Get the update history from Windows Update with status 'Succeeded'
         $wuHistory = Get-WUHistory | Where-Object { $_.Result -eq 'Succeeded' } | 
-            Select-Object Title, Date, @{Name='UpdateID'; Expression={$_.UpdateIdentity.UpdateID}}
+            Select-Object Title, Date, @{Name='UpdateID'; Expression={$_.UpdateIdentity.UpdateID}} -ErrorAction Stop
     
         # Cross-reference by comparing the names from Get-Package and Titles from Get-WUHistory
         $updatesWithDate = foreach ($package in $msuPackages) {
@@ -1818,7 +1827,7 @@ $uninstallUpdateFunc = {
                 try {
                     # Uninstall the selected update
                     Write-Host 'Uninstalling', $($update.Name)
-                    $result = Uninstall-WindowsUpdate -UpdateID "$($update.UpdateID)" -AcceptAll -Verbose
+                    $result = Uninstall-WindowsUpdate -UpdateID "$($update.UpdateID)" -AcceptAll -Verbose -Debuger
                     $result | Format-Table -AutoSize
                     Write-Host "Successfully uninstalled update with Name $($update.Name)"
                 } catch {
@@ -1877,7 +1886,7 @@ $showDriver = {
         if ($isDebug) {
             try {
                 Write-Host "Searching for Windows Driver Updates"
-                $Global:driverUpdates = Get-WindowsUpdate -MicrosoftUpdate -UpdateType Driver -Verbose
+                $Global:driverUpdates = Get-WindowsUpdate -MicrosoftUpdate -UpdateType Driver -Verbose -Debuger -ErrorAction Stop
                 $result = $Global:driverUpdates
                 $result | Format-Table -AutoSize
                 Write-Host "Searching for Windows Driver Updates finished"
@@ -1889,7 +1898,7 @@ $showDriver = {
         } else {
             try {
                 Add-Log "Searching for Windows Driver Updates"
-                $Global:driverUpdates = Get-WindowsUpdate -MicrosoftUpdate -UpdateType Driver
+                $Global:driverUpdates = Get-WindowsUpdate -MicrosoftUpdate -UpdateType Driver -ErrorAction Stop
                 Add-Log "Searching for Windows Driver Updates finished"
             } catch {
                 Add-Log "Failed searching for Windows Driver Updates"
